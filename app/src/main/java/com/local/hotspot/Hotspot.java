@@ -3,30 +3,43 @@ package com.local.hotspot;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.wifi.WifiManager;
 import android.os.BatteryManager;
+import android.os.IBinder;
 import android.os.PowerManager;
 import android.telephony.TelephonyManager;
 
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.Executor;
+import java.util.function.Supplier;
 
-/** Schedule + Wi-Fi/hotspot control. Window: hourly turn-on 07:00-17:00, hotspot off at 18:00. */
+import rikka.shizuku.Shizuku;
+import rikka.shizuku.ShizukuBinderWrapper;
+import rikka.shizuku.SystemServiceHelper;
+
+/**
+ * Schedule + radio control. Window: hourly turn-on 07:00-17:00, hotspot off at 18:00.
+ * Wi-Fi, mobile data and hotspot are switched through Shizuku (ADB shell identity, no root).
+ */
 final class Hotspot {
     static final int START_HOUR = 7;
     static final int OFF_HOUR = 18;
     static final int MIN_BATTERY = 20;
     private static final int TETHERING_WIFI = 0;
     private static final int MAX_LOG_LINES = 40;
+    private static final String SHELL_PKG = "com.android.shell";
 
     private Hotspot() {}
 
@@ -73,7 +86,11 @@ final class Hotspot {
             t.add(Calendar.DAY_OF_YEAR, 1);
             t.set(Calendar.HOUR_OF_DAY, START_HOUR);
         }
-        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t.getTimeInMillis(), pi);
+        if (am.canScheduleExactAlarms()) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t.getTimeInMillis(), pi);
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t.getTimeInMillis(), pi);
+        }
         prefs(c).edit().putString("next", fmt(t.getTime())).apply();
     }
 
@@ -81,8 +98,10 @@ final class Hotspot {
     static void tick(Context c) {
         if (inWindow()) {
             turnOn(c);
-        } else {
+        } else if (waitForShizuku()) {
             setHotspot(c, false);
+        } else {
+            log(c, "Hotspot off skipped: " + shizukuProblem());
         }
     }
 
@@ -97,24 +116,31 @@ final class Hotspot {
             log(c, "Skipped: Power Saver is on");
             return;
         }
+        if (!waitForShizuku()) {
+            log(c, "Skipped: " + shizukuProblem());
+            return;
+        }
 
         WifiManager wm = c.getSystemService(WifiManager.class);
         boolean apOn = isHotspotOn(c);
         if (!wm.isWifiEnabled()) {
-            // Android refuses Wi-Fi toggles from normal apps while the hotspot is up.
+            // On phones without Wi-Fi + hotspot concurrency, enabling Wi-Fi would kill a running hotspot.
             if (apOn) {
-                log(c, "Wi-Fi: off, can't enable while hotspot is on");
+                log(c, "Wi-Fi: left off, hotspot already running");
             } else {
-                log(c, wm.setWifiEnabled(true) ? "Wi-Fi: turned on" : "Wi-Fi: blocked by system");
+                log(c, sh("svc wifi enable") ? "Wi-Fi: turned on" : "Wi-Fi: failed");
                 sleep(3000);
             }
         }
 
+        boolean dataOn;
         try {
-            if (!c.getSystemService(TelephonyManager.class).isDataEnabled()) {
-                log(c, "Mobile data: OFF (cannot be switched on without root)");
-            }
-        } catch (SecurityException ignored) {
+            dataOn = c.getSystemService(TelephonyManager.class).isDataEnabled();
+        } catch (SecurityException e) {
+            dataOn = false;
+        }
+        if (!dataOn) {
+            log(c, sh("svc data enable") ? "Mobile data: turned on" : "Mobile data: failed");
         }
 
         if (apOn) {
@@ -123,6 +149,41 @@ final class Hotspot {
             setHotspot(c, true);
         }
     }
+
+    // ---- Shizuku ----
+
+    static boolean shizukuRunning() {
+        return Shizuku.pingBinder() && !Shizuku.isPreV11();
+    }
+
+    static boolean shizukuReady() {
+        return shizukuRunning() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+    }
+
+    static String shizukuProblem() {
+        return shizukuRunning() ? "Shizuku permission not granted (open this app)"
+                : "Shizuku not running (open Shizuku, tap Start)";
+    }
+
+    /** Shizuku hands its binder to a freshly started process asynchronously, so give it a few seconds. */
+    static boolean waitForShizuku() {
+        for (int i = 0; i < 20 && !Shizuku.pingBinder(); i++) sleep(250);
+        return shizukuReady();
+    }
+
+    /** Runs a command as the ADB shell user through Shizuku. */
+    private static boolean sh(String cmd) {
+        try {
+            Method m = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+            m.setAccessible(true);
+            Process p = (Process) m.invoke(null, new String[]{"sh", "-c", cmd}, null, null);
+            return p.waitFor() == 0;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    // ---- Hotspot ----
 
     static boolean isHotspotOn(Context c) {
         try {
@@ -134,11 +195,33 @@ final class Hotspot {
         }
     }
 
-    /** Uses TetheringManager (system API, allowed with "Modify system settings"). */
+    /** Context that reports the shell package, matching the uid Shizuku makes our binder calls with. */
+    private static final class ShellContext extends ContextWrapper {
+        ShellContext(Context base) {
+            super(base);
+        }
+
+        // Overrides the hidden Context#getOpPackageName() used by TetheringManager.
+        public String getOpPackageName() {
+            return SHELL_PKG;
+        }
+    }
+
+    /** A TetheringManager whose calls reach the tethering service as the shell user (holds TETHER_PRIVILEGED). */
+    private static Object shellTetheringManager(Context c) throws Exception {
+        HiddenApiBypass.addHiddenApiExemptions("");
+        IBinder raw = SystemServiceHelper.getSystemService("tethering");
+        if (raw == null) throw new IllegalStateException("tethering service not found");
+        IBinder binder = new ShizukuBinderWrapper(raw);
+        Supplier<IBinder> supplier = () -> binder;
+        return Class.forName("android.net.TetheringManager")
+                .getConstructor(Context.class, Supplier.class)
+                .newInstance(new ShellContext(c), supplier);
+    }
+
     static void setHotspot(Context c, boolean on) {
         try {
-            HiddenApiBypass.addHiddenApiExemptions("");
-            Object tm = c.getSystemService("tethering");
+            Object tm = shellTetheringManager(c);
             if (on) {
                 Class<?> cbClass = Class.forName("android.net.TetheringManager$StartTetheringCallback");
                 Object cb = Proxy.newProxyInstance(cbClass.getClassLoader(), new Class<?>[]{cbClass},
@@ -148,8 +231,7 @@ final class Hotspot {
                                     log(c, "Hotspot: turned on");
                                     return null;
                                 case "onTetheringFailed":
-                                    log(c, "Hotspot: failed, error " + args[0]
-                                            + ((int) args[0] == 14 ? " (no permission)" : ""));
+                                    log(c, "Hotspot: failed, error " + args[0]);
                                     return null;
                                 case "hashCode":
                                     return System.identityHashCode(proxy);
@@ -174,6 +256,8 @@ final class Hotspot {
             log(c, "Hotspot error: " + t);
         }
     }
+
+    // ---- Log ----
 
     static synchronized void log(Context c, String msg) {
         String old = prefs(c).getString("log", "");
