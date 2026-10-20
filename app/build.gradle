@@ -1,0 +1,32 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.local.hotspot'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.local.hotspot'
+        minSdk 30
+        // Kept at 28 on purpose: Android still lets apps targeting <= 28
+        // switch Wi-Fi on, and they need no exact-alarm permission.
+        targetSdk 28
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
+}
