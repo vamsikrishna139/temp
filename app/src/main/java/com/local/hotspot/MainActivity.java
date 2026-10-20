@@ -60,7 +60,13 @@ public class MainActivity extends Activity {
         Hotspot.setEnabled(this, on);
         if (on && Hotspot.inWindow()) {
             Context c = getApplicationContext();
-            new Thread(() -> Hotspot.turnOn(c)).start();
+            new Thread(() -> {
+                try {
+                    Hotspot.turnOn(c);
+                } catch (Throwable t) {
+                    Hotspot.log(c, "Error: " + t);
+                }
+            }).start();
             new Handler(Looper.getMainLooper()).postDelayed(this::refresh, 6000);
         }
         refresh();

@@ -13,6 +13,8 @@ public class AlarmReceiver extends BroadcastReceiver {
         new Thread(() -> {
             try {
                 if (Hotspot.isEnabled(c)) Hotspot.tick(c);
+            } catch (Throwable t) {
+                Hotspot.log(c, "Error: " + t);
             } finally {
                 Hotspot.schedule(c);
                 result.finish();
