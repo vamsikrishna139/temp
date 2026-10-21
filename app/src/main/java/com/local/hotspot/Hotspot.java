@@ -129,6 +129,8 @@ final class Hotspot {
         }
         if (!dataOn) {
             log(c, sh("svc data enable") ? "Mobile data: turned on" : "Mobile data: failed");
+        } else {
+            log(c, "Mobile data: already on");
         }
 
         if (isHotspotOn(c)) {
@@ -147,6 +149,8 @@ final class Hotspot {
             log(c, sh("svc wifi enable") ? "Wi-Fi: turned on" : "Wi-Fi: failed");
             sleep(3000);
             if (apBefore && !isHotspotOn(c)) log(c, "Hotspot: dropped when Wi-Fi turned on");
+        } else {
+            log(c, "Wi-Fi: already on");
         }
     }
 
