@@ -121,18 +121,6 @@ final class Hotspot {
             return;
         }
 
-        WifiManager wm = c.getSystemService(WifiManager.class);
-        boolean apOn = isHotspotOn(c);
-        if (!wm.isWifiEnabled()) {
-            // On phones without Wi-Fi + hotspot concurrency, enabling Wi-Fi would kill a running hotspot.
-            if (apOn) {
-                log(c, "Wi-Fi: left off, hotspot already running");
-            } else {
-                log(c, sh("svc wifi enable") ? "Wi-Fi: turned on" : "Wi-Fi: failed");
-                sleep(3000);
-            }
-        }
-
         boolean dataOn;
         try {
             dataOn = c.getSystemService(TelephonyManager.class).isDataEnabled();
@@ -143,10 +131,22 @@ final class Hotspot {
             log(c, sh("svc data enable") ? "Mobile data: turned on" : "Mobile data: failed");
         }
 
-        if (apOn) {
+        if (isHotspotOn(c)) {
             log(c, "Hotspot: already on");
         } else {
             setHotspot(c, true);
+            // The hotspot comes up asynchronously, and the phone switches Wi-Fi off while it does.
+            for (int i = 0; i < 20 && !isHotspotOn(c); i++) sleep(500);
+            sleep(3000);
+        }
+
+        // Wi-Fi goes last: the phone runs Wi-Fi and hotspot together once the hotspot is up.
+        WifiManager wm = c.getSystemService(WifiManager.class);
+        if (!wm.isWifiEnabled()) {
+            boolean apBefore = isHotspotOn(c);
+            log(c, sh("svc wifi enable") ? "Wi-Fi: turned on" : "Wi-Fi: failed");
+            sleep(3000);
+            if (apBefore && !isHotspotOn(c)) log(c, "Hotspot: dropped when Wi-Fi turned on");
         }
     }
 

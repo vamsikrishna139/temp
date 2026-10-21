@@ -19,6 +19,6 @@ Every push builds the app with GitHub Actions. Download `HotspotScheduler.apk` f
 "Shizuku not running".
 
 ## Notes
-- If the phone can't run Wi-Fi and hotspot together, Android turns Wi-Fi off when the hotspot starts.
-  The app never re-enables Wi-Fi while the hotspot is running.
+- Order each hour: mobile data, then hotspot, then Wi-Fi. Android switches Wi-Fi off while the hotspot
+  starts, so Wi-Fi is turned back on afterwards (works on phones that support Wi-Fi + hotspot together).
 - Each CI build is signed with a fresh debug key: uninstall the old version before installing a new one.
