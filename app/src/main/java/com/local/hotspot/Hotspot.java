@@ -40,6 +40,8 @@ final class Hotspot {
     private static final int TETHERING_WIFI = 0;
     private static final int MAX_LOG_LINES = 40;
     private static final String SHELL_PKG = "com.android.shell";
+    // The phone may fire an alarm a few minutes early; a wakeup this close to the hour counts as that hour.
+    private static final int EARLY_MINUTES = 10;
 
     private Hotspot() {}
 
@@ -57,8 +59,15 @@ final class Hotspot {
         schedule(c);
     }
 
+    /** Now, shifted forward so an alarm that fires a few minutes early lands in the hour it was meant for. */
+    private static Calendar slotNow() {
+        Calendar t = Calendar.getInstance();
+        t.add(Calendar.MINUTE, EARLY_MINUTES);
+        return t;
+    }
+
     static boolean inWindow() {
-        int h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        int h = slotNow().get(Calendar.HOUR_OF_DAY);
         return h >= START_HOUR && h < OFF_HOUR;
     }
 
@@ -74,7 +83,7 @@ final class Hotspot {
             return;
         }
 
-        Calendar t = Calendar.getInstance();
+        Calendar t = slotNow();
         t.set(Calendar.MINUTE, 0);
         t.set(Calendar.SECOND, 0);
         t.set(Calendar.MILLISECOND, 0);
@@ -161,7 +170,12 @@ final class Hotspot {
     }
 
     static boolean shizukuReady() {
-        return shizukuRunning() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        try {
+            return shizukuRunning() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        } catch (RuntimeException e) {
+            // Binder received but this process is not attached to Shizuku yet ("Not an attached client").
+            return false;
+        }
     }
 
     static String shizukuProblem() {
@@ -169,10 +183,13 @@ final class Hotspot {
                 : "Shizuku not running (open Shizuku, tap Start)";
     }
 
-    /** Shizuku hands its binder to a freshly started process asynchronously, so give it a few seconds. */
+    /** Shizuku hands its binder to a freshly started process and attaches it asynchronously, so give it a few seconds. */
     static boolean waitForShizuku() {
-        for (int i = 0; i < 20 && !Shizuku.pingBinder(); i++) sleep(250);
-        return shizukuReady();
+        for (int i = 0; i < 40; i++) {
+            if (shizukuReady()) return true;
+            sleep(250);
+        }
+        return false;
     }
 
     /** Runs a command as the ADB shell user through Shizuku. */

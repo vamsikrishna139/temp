@@ -3,7 +3,6 @@ package com.local.hotspot;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Bundle;
@@ -104,11 +103,14 @@ public class MainActivity extends Activity {
     }
 
     private void askPermissions() {
-        if (Hotspot.shizukuRunning() && !askedShizuku
-                && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-            askedShizuku = true;
-            Shizuku.requestPermission(1);
-            return;
+        if (Hotspot.shizukuRunning() && !askedShizuku && !Hotspot.shizukuReady()) {
+            try {
+                Shizuku.requestPermission(1);
+                askedShizuku = true;
+                return;
+            } catch (RuntimeException ignored) {
+                // Not attached to Shizuku yet; the binder listener calls this again once it is.
+            }
         }
         String pkg = getPackageName();
         PowerManager pm = getSystemService(PowerManager.class);
